@@ -5,6 +5,7 @@ all_from "metacpan-growler.pl";
 install_script "metacpan-growler.pl";
 
 requires 'Cocoa::Growl';
+requires 'Cocoa::EventLoop';
 requires 'AnyEvent';
 requires 'AnyEvent::HTTP';
 requires 'Data::MessagePack';

@@ -1,8 +1,9 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl
 use strict;
 use warnings;
 
 use Cocoa::Growl;
+use Cocoa::EventLoop;
 use AnyEvent;
 use AnyEvent::HTTP;
 use JSON;
@@ -10,13 +11,13 @@ use Data::MessagePack;
 use Cache::LRU;
 use Encode;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 my $app_name   = 'MetaCPAN Growler';
 my $app_domain = 'org.github.hideo55.metacpangrowler';
 
-my $uri       = 'http://api.metacpan.org/v0/release/_search';
-my $post_data = JSON::encode_json(
+my $search_uri = 'http://api.metacpan.org/v0/release/_search';
+my $post_data  = JSON::encode_json(
 	{   'size' => 20,
 		'from' => 0,
 		'sort' => [ { 'date' => { 'order' => 'desc', }, }, ],
@@ -29,8 +30,8 @@ my $author_api = 'http://api.metacpan.org/v0/author';
 Cocoa::Growl::growl_register(
 	app           => $app_name,
 	icon          => 'http://metacpan.org/favicon.ico',
-	notifications => [ 'Release new module', 'Fatal Error', 'Error' ],
-	defaults => [ 'Release new module', 'Fatal Error' ],
+	notifications => [ 'Update', 'Error' ],
+	defaults      => [ 'Update', 'Error' ],
 );
 
 my %options = ( interval => 300, maxGrowls => 10, cacheSize => 100, );
@@ -54,54 +55,68 @@ my %Seen;
 sub get_metacpan_info {
 	my $max_growls = shift;
 
-	http_post $uri, $post_data, sub {
-		my $mod_info
-			= $_[1]->{Status} == 200
-			? eval { JSON::decode_json( $_[0] ) }
-			: undef;
+	for my $uri ($search_uri) {
 
-		unless ($mod_info) {
+		http_post $uri, $post_data,
+			headers    => {},
+			persistent => 0,
+			sub {
+			my $mod_info
+				= $_[1]->{Status} == 200
+				? eval { JSON::decode_json( $_[0] ) }
+				: undef;
 
-			Cocoa::Growl::growl_notify(
-				name        => 'Error',
-				title       => $app_name,
-				description => "Can't parse the metacpan response.",
-			);
-			return;
-		}
+			unless ($mod_info) {
 
-		my @to_growl;
-		for my $entry ( @{ $mod_info->{hits}{hits} } ) {
-			my $id = $entry->{fields}{id};
-			next if $Seen{$id}++;
-			next
-				if @to_growl >= $max_growls; # not last, so that we can cache them in %Seen
-			push @to_growl, $entry;
-		}
+				Cocoa::Growl::growl_notify(
+					name        => 'Error',
+					title       => $app_name,
+					description => "Can't parse the metacpan response.",
+				);
+				return;
+			}
 
-		for my $entry (@to_growl) {
-			my $author_id = $entry->{fields}{author};
-			get_author(
-				$author_id,
-				sub {
-					my $author = shift;
-					$author->{name} ||= $author_id;
-					my $title       = $author->{name};
-					my $description = $entry->{fields}{name};
-					$description .= ' : ' . $entry->{fields}{abstract}
-						if $entry->{fields}{abstract};
-					my $icon = $author->{avatar} ? "$author->{avatar}" : q{};
+			my @to_growl;
+			for my $entry ( @{ $mod_info->{hits}{hits} } ) {
+				my $id = $entry->{fields}{id};
+				next if $Seen{$id}++;
+				next
+					if @to_growl >= $max_growls
+				;    # not last, so that we can cache them in %Seen
+				push @to_growl, $entry;
+			}
 
-					Cocoa::Growl::growl_notify(
-						name        => 'Release new module',
-						title       => encode_utf8($title),
-						description => encode_utf8($description),
-						icon        => $author->{avatar},
-					);
-				}
-			);
-		}
-	};
+			for my $entry (@to_growl) {
+				my $author_id = $entry->{fields}{author};
+				get_author(
+					$author_id,
+					sub {
+						my $author = shift;
+						$author->{name} ||= $author_id;
+						my $title       = $author->{name};
+						my $name        = $entry->{fields}{name};
+						my $description = $name;
+						$description = ' : ' . $entry->{fields}{abstract}
+							if $entry->{fields}{abstract};
+						my $icon
+							= $author->{avatar} ? "$author->{avatar}" : q{};
+
+						Cocoa::Growl::growl_notify(
+							name        => 'Update',
+							title       => encode_utf8($title),
+							description => encode_utf8($description),
+							icon        => $author->{avatar},
+							on_click    => sub {
+								my $link
+									= "http://metacpan.org/release/${author_id}/${name}";
+								system( "open", $link );
+							},
+						);
+					}
+				);
+			}
+		};
+	}
 }
 
 sub get_preferences {
